@@ -17,6 +17,7 @@ v10.2'den devralınanlar korunmuştur.
 """
 
 import os, re, io, json, math, threading, csv
+from pathlib import Path
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple, Set
 import xml.etree.ElementTree as ET
@@ -28,13 +29,13 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 
 # ====================== Sabitler ======================
 DEFAULTS = {
-    "api_token": "3B51B4C7C94FF977E42389915CFDA353F6DCE2BF6A2A82C033FBB0950B17CDE8",
-    "download_dir": os.getcwd(),
-    "out_name": r"C:\Users\siyah\OneDrive\Masaüstü\imei_rapor.xlsx",
+    "api_token": "",
+    "download_dir": str(Path.home()),
+    "out_name": str(Path.home() / "imei_rapor.xlsx"),
     # IMEI dışı fatura (kargo/enerji/telekom vs) beyaz liste: ünvan regex’leri
     "whitelist_patterns": [
         r"\bYURTIC[IİÇ]|ARAS|MNG|S[ÜU]RAT|PTT|UPS|FEDEX|DHL\b",
@@ -399,10 +400,27 @@ def load_settings() -> Dict[str,Any]:
     s = DEFAULTS.copy()
     if os.path.exists(SETTINGS_FILE):
         try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f: s.update(json.load(f))
-        except Exception: pass
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                s.update(json.load(f))
+        except Exception:
+            pass
+    env_file = Path(".env")
+    if env_file.exists():
+        try:
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+        except Exception:
+            pass
+    token = os.getenv("NES_API_TOKEN")
+    if token:
+        s["api_token"] = token
     try:
-        s["_whitelist_compiled"] = [re.compile(pat, re.I) for pat in s.get("whitelist_patterns",[])]
+        s["_whitelist_compiled"] = [re.compile(pat, re.I) for pat in s.get("whitelist_patterns", [])]
     except Exception:
         s["_whitelist_compiled"] = []
     return s
@@ -1059,8 +1077,13 @@ class App(tk.Tk):
     def _start_scan(self):
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("Bilgi", "Devam eden iş var. Önce durdurun."); return
-        if not self.tk_token.get().strip():
-            messagebox.showwarning("Uyarı", "Önce API token girin."); return
+        token = self.tk_token.get().strip()
+        if not token:
+            token = simpledialog.askstring("API Token", "NES API token giriniz:", parent=self)
+            if not token:
+                messagebox.showwarning("Uyarı", "API token gerekli.")
+                return
+            self.tk_token.set(token.strip())
 
         # Ağ ayarlarını uygula
         global TIMEOUT_CONNECT, TIMEOUT_READ, RETRIES, BACKOFF, SESSION
