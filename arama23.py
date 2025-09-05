@@ -16,7 +16,7 @@ YENİ (v10.3):
 v10.2'den devralınanlar korunmuştur.
 """
 
-import os, re, io, json, math, threading, csv
+import os, re, io, json, math, threading, csv, logging, queue
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple, Set
 import xml.etree.ElementTree as ET
@@ -29,6 +29,8 @@ from openpyxl.utils import get_column_letter
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
+
+from logconf import get_gui_queue, setup_logger
 
 # ====================== Sabitler ======================
 DEFAULTS = {
@@ -569,6 +571,10 @@ class App(tk.Tk):
         self.stop_evt = threading.Event()
         self.worker = None
 
+        self.logger = setup_logger()
+        self.log_queue = get_gui_queue()
+        self.after(100, self._process_log_queue)
+
         self.rows: List[List[Any]] = []
         self.iid_to_row_index: Dict[str,int] = {}
         self.imei_to_iid: Dict[str,str] = {}
@@ -737,7 +743,18 @@ class App(tk.Tk):
         pan.add(logf, weight=2)
 
     # ---------- helpers ----------
-    def _log(self, msg: str): self.log.insert(tk.END, msg + "\n"); self.log.see(tk.END)
+    def _process_log_queue(self):
+        try:
+            while True:
+                msg = self.log_queue.get_nowait()
+                self.log.insert(tk.END, msg + "\n")
+                self.log.see(tk.END)
+        except queue.Empty:
+            pass
+        self.after(100, self._process_log_queue)
+
+    def _log(self, msg: str):
+        self.logger.info(msg)
     def _save_settings(self):
         s = self.settings
         s["api_token"] = self.tk_token.get().strip()
