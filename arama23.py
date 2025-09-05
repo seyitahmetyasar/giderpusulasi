@@ -26,6 +26,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
+from contextlib import contextmanager
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -144,7 +145,6 @@ TIMEOUT_CONNECT = DEFAULTS["timeout_connect"]
 TIMEOUT_READ    = DEFAULTS["timeout_read"]
 RETRIES         = DEFAULTS["retries"]
 BACKOFF         = DEFAULTS["backoff"]
-SESSION = None
 
 def make_session(retries: int = None, backoff: float = None) -> requests.Session:
     r = retries if retries is not None else RETRIES
@@ -162,11 +162,13 @@ def make_session(retries: int = None, backoff: float = None) -> requests.Session
     s.mount("http://", adapter)
     return s
 
-def get_session() -> requests.Session:
-    global SESSION
-    if SESSION is None:
-        SESSION = make_session()
-    return SESSION
+@contextmanager
+def session(retries: int = None, backoff: float = None):
+    s = make_session(retries, backoff)
+    try:
+        yield s
+    finally:
+        s.close()
 
 def headers(token: str, typ="json") -> Dict[str, str]:
     h = {
@@ -180,22 +182,24 @@ def headers(token: str, typ="json") -> Dict[str, str]:
     if typ == "bin": h["Accept"]  = "*/*"
     return h
 
-def http_get(url: str, *, token: Optional[str], typ="json", params=None, log=None, stop_evt: Optional[threading.Event]=None):
+def http_get(sess: requests.Session, url: str, *, token: Optional[str], typ="json", params=None, log=None, stop_evt: Optional[threading.Event]=None):
     if stop_evt is not None and stop_evt.is_set():
         return None
     try:
-        sess = get_session()
         hdrs = headers(token, typ) if token is not None else {"User-Agent": "IMEI-NES-Client/10.3"}
         r = sess.get(url, headers=hdrs, params=params, timeout=(TIMEOUT_CONNECT, TIMEOUT_READ))
         if r.status_code == 200:
             return r
-        if log: log(f"[HTTP] Hata {r.status_code}: {url} → {r.text[:300]}")
+        if log:
+            log(f"[HTTP] Hata {r.status_code}: {url} → {r.text[:300]}")
         return None
     except requests.Timeout:
-        if log: log(f"[HTTP] Zaman aşımı: {url}")
+        if log:
+            log(f"[HTTP] Zaman aşımı: {url}")
         return None
     except requests.RequestException as e:
-        if log: log(f"[HTTP] İstek hatası: {e}")
+        if log:
+            log(f"[HTTP] İstek hatası: {e}")
         return None
 
 def xfind(t: ET.Element, path: str) -> Optional[ET.Element]: return t.find(path, NS) if t is not None else None
@@ -327,33 +331,39 @@ def paged_list(url: str, token: str, start: str, end: str, log, stop_evt, archiv
         start, end = DEFAULT_DATE_START, _today_str()
         log(f"[{section_name}] Tarih boş → {start}..{end} aralığı kullanılacak.")
     out, page, total = [], 1, None
-    while True:
-        if stop_evt.is_set(): break
-        params = {"sort":"createdAt desc", "page":page, "pageSize":PAGE_SIZE}
-        if archived is not None: params["archived"] = "true" if archived else "false"
-        if start: params["startDate"] = f"{start}T00:00:00+03:00"
-        if end:   params["endDate"]   = f"{end}T23:59:59+03:00"
+    with session() as s:
+        while True:
+            if stop_evt.is_set():
+                break
+            params = {"sort": "createdAt desc", "page": page, "pageSize": PAGE_SIZE}
+            if archived is not None:
+                params["archived"] = "true" if archived else "false"
+            if start:
+                params["startDate"] = f"{start}T00:00:00+03:00"
+            if end:
+                params["endDate"] = f"{end}T23:59:59+03:00"
 
-        r = http_get(url, token=token, typ="json", params=params, log=log, stop_evt=stop_evt)
-        if r is None:
-            log(f"[{section_name}] İstek başarısız/timeout. Döngü sonlandırıldı.")
-            break
-        try:
-            data = r.json() or {}
-        except ValueError:
-            log(f"[{section_name}] JSON çözümlenemedi.")
-            break
+            r = http_get(s, url, token=token, typ="json", params=params, log=log, stop_evt=stop_evt)
+            if r is None:
+                log(f"[{section_name}] İstek başarısız/timeout. Döngü sonlandırıldı.")
+                break
+            try:
+                data = r.json() or {}
+            except ValueError:
+                log(f"[{section_name}] JSON çözümlenemedi.")
+                break
 
-        if total is None:
-            tc = data.get("totalCount") or 0
-            total = max(1, math.ceil(tc / PAGE_SIZE)) if isinstance(tc, int) else 1
-        batch = data.get("data") or data.get("invoices") or []
-        if not batch:
-            break
-        log(f"[{section_name}] Sayfa {page}/{total} → {len(batch)} kayıt")
-        out.extend(batch)
-        if page >= total: break
-        page += 1
+            if total is None:
+                tc = data.get("totalCount") or 0
+                total = max(1, math.ceil(tc / PAGE_SIZE)) if isinstance(tc, int) else 1
+            batch = data.get("data") or data.get("invoices") or []
+            if not batch:
+                break
+            log(f"[{section_name}] Sayfa {page}/{total} → {len(batch)} kayıt")
+            out.extend(batch)
+            if page >= total:
+                break
+            page += 1
     return out
 
 def list_both_archived(url: str, token: str, start: str, end: str, log, stop_evt, section_name: str) -> List[Dict[str,Any]]:
@@ -371,12 +381,14 @@ def list_both_archived(url: str, token: str, start: str, end: str, log, stop_evt
     return uniq
 
 def fetch_xml_by(url_tpl: str, token: str, inv_id: str) -> Optional[bytes]:
-    r = http_get(f"{url_tpl.format(id=inv_id)}/xml", token=token, typ="xml")
-    return (r.content if r is not None else None)
+    with session() as s:
+        r = http_get(s, f"{url_tpl.format(id=inv_id)}/xml", token=token, typ="xml")
+        return r.content if r is not None else None
 
 def fetch_pdf_by(url_tpl: str, token: str, inv_id: str) -> Optional[bytes]:
-    r = http_get(f"{url_tpl.format(id=inv_id)}/pdf", token=token, typ="pdf")
-    return (r.content if r is not None else None)
+    with session() as s:
+        r = http_get(s, f"{url_tpl.format(id=inv_id)}/pdf", token=token, typ="pdf")
+        return r.content if r is not None else None
 
 # ====================== Ayarlar / Excel ======================
 HEADERS = [
@@ -890,22 +902,23 @@ class App(tk.Tk):
         urls = [u.strip() for u in self.tk_gp_urls.get("1.0","end").splitlines() if u.strip()]
         if not urls:
             messagebox.showinfo("Bilgi", "Önce en az bir URL girin."); return
-        for url in urls:
-            try:
-                self._log(f"[GP] URL indiriliyor: {url}")
-                resp = http_get(url, token=None, typ="bin", log=self._log, stop_evt=self.stop_evt)
-                if resp is None:
-                    self._log(f"[GP] ❌ URL yüklenemedi (timeout/hata): {url}")
-                    continue
-                wb = load_workbook(io.BytesIO(resp.content), data_only=True)
-                rows_ready = parse_gp_template_workbook(wb, self._log)
-                if rows_ready:
-                    self._merge_gp_ready_rows(rows_ready)
-                else:
-                    items = parse_gp_workbook(wb, self._log)
-                    self._merge_gp_items(items)
-            except Exception as e:
-                self._log(f"[GP] ❌ URL yüklenemedi: {e}")
+        with session() as s:
+            for url in urls:
+                try:
+                    self._log(f"[GP] URL indiriliyor: {url}")
+                    resp = http_get(s, url, token=None, typ="bin", log=self._log, stop_evt=self.stop_evt)
+                    if resp is None:
+                        self._log(f"[GP] ❌ URL yüklenemedi (timeout/hata): {url}")
+                        continue
+                    wb = load_workbook(io.BytesIO(resp.content), data_only=True)
+                    rows_ready = parse_gp_template_workbook(wb, self._log)
+                    if rows_ready:
+                        self._merge_gp_ready_rows(rows_ready)
+                    else:
+                        items = parse_gp_workbook(wb, self._log)
+                        self._merge_gp_items(items)
+                except Exception as e:
+                    self._log(f"[GP] ❌ URL yüklenemedi: {e}")
         self._log(f"[GP] Tamamlandı.")
 
     def _load_gp_from_file(self):
@@ -1063,12 +1076,11 @@ class App(tk.Tk):
             messagebox.showwarning("Uyarı", "Önce API token girin."); return
 
         # Ağ ayarlarını uygula
-        global TIMEOUT_CONNECT, TIMEOUT_READ, RETRIES, BACKOFF, SESSION
+        global TIMEOUT_CONNECT, TIMEOUT_READ, RETRIES, BACKOFF
         TIMEOUT_CONNECT = int(self.settings.get("timeout_connect", DEFAULTS["timeout_connect"]))
         TIMEOUT_READ    = int(self.settings.get("timeout_read", DEFAULTS["timeout_read"]))
         RETRIES         = int(self.settings.get("retries", DEFAULTS["retries"]))
         BACKOFF         = float(self.settings.get("backoff", DEFAULTS["backoff"]))
-        SESSION = make_session(RETRIES, BACKOFF)
 
         self.log.delete("1.0", tk.END); self.stop_evt.clear(); self.btn_stop.config(state="normal")
 
