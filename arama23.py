@@ -448,32 +448,39 @@ _HEADER_ALIAS = {
 }
 
 def _build_header_map(ws) -> Optional[Dict[str, Any]]:
-    for r in range(1, min(11, ws.max_row)+1):
-        row = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column+1)]
+    for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=11, values_only=True), start=1):
         normed = [_norm_header(x) for x in row]
-        col_to_name = {}; hit = 0; has_imei = False
+        col_to_name = {}
+        hit = 0
+        has_imei = False
         for idx, hh in enumerate(normed):
-            if not hh: continue
-            key = hh.replace("ı","i")
+            if not hh:
+                continue
+            key = hh.replace("ı", "i")
             key = re.sub(r"[^a-z0-9/ ]", "", key)
             name = _HEADER_ALIAS.get(key, None)
             if name:
-                col_to_name[idx] = name; hit += 1
-                if name == "imei": has_imei = True
+                col_to_name[idx] = name
+                hit += 1
+                if name == "imei":
+                    has_imei = True
         if has_imei and hit >= 5:
-            return {"row": r, "cols": col_to_name}
+            return {"row": r_idx, "cols": col_to_name}
     return None
 
 def parse_gp_template_workbook(wb, log) -> List[List[Any]]:
     out_rows: List[List[Any]] = []
     for ws in wb.worksheets:
         hm = _build_header_map(ws)
-        if not hm: continue
-        hdr_row = hm["row"]; colmap = hm["cols"]
+        if not hm:
+            continue
+        hdr_row = hm["row"]
+        colmap = hm["cols"]
         taken = 0
-        for r in range(hdr_row+1, ws.max_row+1):
-            vals = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column+1)]
-            if not any(norm(v) for v in vals): continue
+        for vals in ws.iter_rows(min_row=hdr_row + 1, values_only=True):
+            vals = list(vals)
+            if not any(norm(v) for v in vals):
+                continue
             row_dict = {name: "" for name in HEADERS}
             for cidx, name in colmap.items():
                 if cidx < len(vals):
@@ -482,15 +489,16 @@ def parse_gp_template_workbook(wb, log) -> List[List[Any]]:
             if not re.fullmatch(r"\d{15}", imei_val or ""):
                 merged = " | ".join([norm(v) for v in vals])
                 m_all = extract_imeis(merged)
-                if not m_all: continue
+                if not m_all:
+                    continue
                 row_dict["imei"] = m_all[0]
 
-            if nup(row_dict.get("Belge Türü","")) in ("GMA","GIDER PUSULASI","GİDER PUSULASI"):
+            if nup(row_dict.get("Belge Türü", "")) in ("GMA", "GIDER PUSULASI", "GİDER PUSULASI"):
                 row_dict["Belge Türü"] = "GİDER PUSULASI"
                 row_dict["ALIŞ BELGELERİ TÜRÜ"] = row_dict.get("ALIŞ BELGELERİ TÜRÜ") or "Gider Pusulası"
             if not row_dict.get("Marka"):
-                row_dict["Marka"] = brand_from_text(row_dict.get("MODEL",""))
-            if any(row_dict.get(k) for k in ("SATIŞ TARİHi","ALICI ADI SOYADI","SATIŞ BEDELİ","SATIŞ BELGESİNİN NUMARASI")):
+                row_dict["Marka"] = brand_from_text(row_dict.get("MODEL", ""))
+            if any(row_dict.get(k) for k in ("SATIŞ TARİHi", "ALICI ADI SOYADI", "SATIŞ BEDELİ", "SATIŞ BELGESİNİN NUMARASI")):
                 row_dict["DURUMU"] = row_dict.get("DURUMU") or "Satılmış"
             else:
                 row_dict["DURUMU"] = row_dict.get("DURUMU") or "Satılabilir"
@@ -515,47 +523,49 @@ def _find_col_idx(headers_row: List[Any], keys: List[str]) -> Optional[int]:
         for k in keys:
             if k in hh: return i
     return None
-def _scan_header(ws) -> Tuple[int, Dict[str,int]]:
-    for r in range(1, min(12, ws.max_row)+1):
-        row = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column+1)]
+def _scan_header(ws) -> Tuple[int, Dict[str, int]]:
+    for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=12, values_only=True), start=1):
         idx_imei = _find_col_idx(row, GP_KW["imei"])
         if idx_imei is not None:
             cols = {
                 "imei": idx_imei,
                 "tarih": _find_col_idx(row, GP_KW["tarih"]) or -1,
                 "bedel": _find_col_idx(row, GP_KW["bedel"]) or -1,
-                "ad":    _find_col_idx(row, GP_KW["ad"])    or -1,
-                "sube":  _find_col_idx(row, GP_KW["sube"])  or -1,
+                "ad": _find_col_idx(row, GP_KW["ad"]) or -1,
+                "sube": _find_col_idx(row, GP_KW["sube"]) or -1,
                 "aciklama": _find_col_idx(row, GP_KW["aciklama"]) or -1,
             }
-            return r, cols
+            return r_idx, cols
     cols = {"imei": 0, "tarih": -1, "bedel": -1, "ad": -1, "sube": -1, "aciklama": -1}
     return 1, cols
 
-def parse_gp_workbook(wb, log) -> List[Dict[str,Any]]:
+def parse_gp_workbook(wb, log) -> List[Dict[str, Any]]:
     out = []
     for ws in wb.worksheets:
         head_row, cols = _scan_header(ws)
         start = head_row + 1
         found_rows = 0
-        for r in range(start, ws.max_row+1):
-            vals = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column+1)]
+        for vals in ws.iter_rows(min_row=start, values_only=True):
+            vals = list(vals)
             text_row = " | ".join([norm(v) for v in vals])
             imeis = extract_imeis(text_row)
             if not imeis and cols["imei"] >= 0:
                 v = norm(vals[cols["imei"]] if cols["imei"] < len(vals) else "")
-                if re.fullmatch(r"\d{15}", v) and _luhn_ok_imei(v): imeis = [v]
-            if not imeis: continue
+                if re.fullmatch(r"\d{15}", v) and _luhn_ok_imei(v):
+                    imeis = [v]
+            if not imeis:
+                continue
             for im in imeis:
                 item = {
                     "imei": im,
                     "tarih": norm(vals[cols["tarih"]]) if cols["tarih"] >= 0 else "",
                     "bedel": norm(vals[cols["bedel"]]) if cols["bedel"] >= 0 else "",
-                    "ad":    norm(vals[cols["ad"]])    if cols["ad"]    >= 0 else "",
-                    "sube":  norm(vals[cols["sube"]])  if cols["sube"]  >= 0 else "",
+                    "ad": norm(vals[cols["ad"]]) if cols["ad"] >= 0 else "",
+                    "sube": norm(vals[cols["sube"]]) if cols["sube"] >= 0 else "",
                     "aciklama": norm(vals[cols["aciklama"]]) if cols["aciklama"] >= 0 else "",
                 }
-                out.append(item); found_rows += 1
+                out.append(item)
+                found_rows += 1
         log(f"[GP] Sayfa '{ws.title}': {found_rows} satır/IMEI çıkarıldı.")
     return out
 
@@ -793,7 +803,7 @@ class App(tk.Tk):
         if not p: return
         arr: List[str] = []
         try:
-            wb = load_workbook(p, data_only=True); ws = wb.active
+            wb = load_workbook(p, data_only=True, read_only=True); ws = wb.active
             for r in ws.iter_rows(min_row=1, max_col=1, values_only=True):
                 v = str(r[0]).strip() if r and r[0] is not None else ""
                 if re.fullmatch(r"\d{15}", v) and _luhn_ok_imei(v): arr.append(v)
@@ -897,7 +907,7 @@ class App(tk.Tk):
                 if resp is None:
                     self._log(f"[GP] ❌ URL yüklenemedi (timeout/hata): {url}")
                     continue
-                wb = load_workbook(io.BytesIO(resp.content), data_only=True)
+                wb = load_workbook(io.BytesIO(resp.content), data_only=True, read_only=True)
                 rows_ready = parse_gp_template_workbook(wb, self._log)
                 if rows_ready:
                     self._merge_gp_ready_rows(rows_ready)
@@ -912,7 +922,7 @@ class App(tk.Tk):
         p = filedialog.askopenfilename(title="Gider Pusulası Excel seç", filetypes=[("Excel","*.xlsx *.xls")])
         if not p: return
         try:
-            wb = load_workbook(p, data_only=True)
+            wb = load_workbook(p, data_only=True, read_only=True)
             rows_ready = parse_gp_template_workbook(wb, self._log)
             if rows_ready:
                 self._merge_gp_ready_rows(rows_ready); return
