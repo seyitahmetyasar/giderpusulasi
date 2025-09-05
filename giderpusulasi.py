@@ -969,7 +969,7 @@ class App(tk.Tk):
         if kdv is None: return
         s = self.imei_kdv_out.get(imei, set()); s.add(int(round(kdv))); self.imei_kdv_out[imei] = s
 
-    def _find_kdv_for_imei(self, P: Parsed, imei: str) -> Optional[float]:
+    def _find_kdv_for_imei(self, P, imei: str) -> Optional[float]:
         for L in P.lines:
             if imei and imei in L["blob"]:
                 return L.get("kdv", None) or P.inv_kdv
@@ -1056,7 +1056,7 @@ class App(tk.Tk):
         # Boş tabloyu koru (mevcut veriler kalsın) – yeni tarama sadece ekler/birleştirir
         self.worker = threading.Thread(target=self._scan_flow, daemon=True); self.worker.start()
 
-    def _append_or_merge_purchase(self, P: Parsed, inv_id: str, doc_no: str, im: str, borc_tutar: str, model: str, brand: str):
+    def _append_or_merge_purchase(self, P, inv_id: str, doc_no: str, im: str, borc_tutar: str, model: str, brand: str):
         key = (doc_no, im)
         if key in self.seen_in_pairs:
             self._log(f"    ↳ IMEI {im} ⚠ zaten eklendi (alış mükerrer): {doc_no}")
@@ -1111,7 +1111,7 @@ class App(tk.Tk):
         self._update_kdv_cols(im)
         self._update_classification_for(im)
 
-    def _append_or_merge_sale(self, P: Parsed, inv_id: str, doc_no: str, im: str, kind: str):
+    def _append_or_merge_sale(self, P, inv_id: str, doc_no: str, im: str, kind: str):
         key = (doc_no, im)
         if key in self.seen_out_pairs:
             self._log(f"    ↳ IMEI {im} ⚠ zaten eklendi (satış mükerrer): {doc_no}")
