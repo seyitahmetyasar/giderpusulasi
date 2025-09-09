@@ -627,8 +627,8 @@ class App(tk.Tk):
             self.tree.column(c, width=w, anchor="w")
         self.tree.pack(fill="both", expand=True, padx=12, pady=6)
         ysb = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview); self.tree.configure(yscrollcommand=ysb.set); ysb.place(in_=self.tree, relx=1.0, rely=0, relheight=1.0, x=-16)
-        logf = ttk.LabelFrame(self, text="Log"); logf.pack(fill="x", padx=12, pady=6)
-        self.log = scrolledtext.ScrolledText(logf, height=11); self.log.pack(fill="x", padx=8, pady=6)
+        logf = ttk.LabelFrame(self, text="Log"); logf.pack(fill="both", expand=True, padx=12, pady=6)
+        self.log = scrolledtext.ScrolledText(logf, height=18); self.log.pack(fill="both", expand=True, padx=8, pady=6)
 
     def _log(self, msg: str): self.log.insert(tk.END, msg + "\n"); self.log.see(tk.END)
     def _save_settings(self):
