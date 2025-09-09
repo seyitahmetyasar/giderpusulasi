@@ -21,6 +21,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
+import warnings
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -396,6 +397,12 @@ def write_excel(rows: List[List[Any]], out_path: str):
         ws.column_dimensions[get_column_letter(col)].width = min(max(12, mx+2), 60)
     wb.save(out_path)
 
+def load_wb(src, **kw):
+    kw.setdefault("data_only", True)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+        return load_workbook(src, **kw)
+
 def is_whitelisted_supplier(name: str, settings: Dict[str,Any]) -> bool:
     if not name: return False
     U = nup(name)
@@ -463,7 +470,15 @@ def parse_gp_template_workbook(wb, log) -> List[List[Any]]:
             out_rows.append([row_dict[h] for h in HEADERS]); taken += 1
         log(f"[GP] Sayfa '{ws.title}': {taken} satır alındı.")
     return out_rows
-GP_KW = { "imei": ["imei","seri","serial","serı","serino","seri no","seri-no"], "tarih": ["tarih","alış tarihi","alis tarihi","işlem tarihi","islem tarihi","gp tarihi"], "bedel": ["tutar","bedel","fiyat","ödenen","odenen","ucret","ücret"], "ad": ["adı","ad soyad","adsoyad","satıcı","satici","müsteri","musteri","alan","veren"], "sube": ["şube","sube","magaza","mağaza"], "aciklama": ["açıklama","aciklama","not","ürün","urun","cihaz","model"] }
+GP_KW = {
+    "imei": ["imei","seri","serial","serı","serino","seri no","seri-no"],
+    "tarih": ["tarih","alış tarihi","alis tarihi","işlem tarihi","islem tarihi","gp tarihi"],
+    "bedel": ["tutar","bedel","fiyat","ödenen","odenen","ucret","ücret"],
+    "ad": ["adı","ad soyad","adsoyad","satıcı","satici","müsteri","musteri","alan","veren"],
+    "sube": ["şube","sube","magaza","mağaza"],
+    "aciklama": ["açıklama","aciklama","not","ürün","urun","cihaz","model"],
+    "marka": ["marka","brand"],
+}
 def _find_col_idx(headers_row: List[Any], keys: List[str]) -> Optional[int]:
     for i, h in enumerate(headers_row):
         hh = nlow(h)
@@ -475,9 +490,17 @@ def _scan_header(ws) -> Tuple[int, Dict[str,int]]:
         row = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column+1)]
         idx_imei = _find_col_idx(row, GP_KW["imei"])
         if idx_imei is not None:
-            cols = { "imei": idx_imei, "tarih": _find_col_idx(row, GP_KW["tarih"]) or -1, "bedel": _find_col_idx(row, GP_KW["bedel"]) or -1, "ad": _find_col_idx(row, GP_KW["ad"]) or -1, "sube": _find_col_idx(row, GP_KW["sube"]) or -1, "aciklama": _find_col_idx(row, GP_KW["aciklama"]) or -1, }
+            cols = {
+                "imei": idx_imei,
+                "tarih": _find_col_idx(row, GP_KW["tarih"]) or -1,
+                "bedel": _find_col_idx(row, GP_KW["bedel"]) or -1,
+                "ad": _find_col_idx(row, GP_KW["ad"]) or -1,
+                "sube": _find_col_idx(row, GP_KW["sube"]) or -1,
+                "aciklama": _find_col_idx(row, GP_KW["aciklama"]) or -1,
+                "marka": _find_col_idx(row, GP_KW["marka"]) or -1,
+            }
             return r, cols
-    return 1, {"imei": 0, "tarih": -1, "bedel": -1, "ad": -1, "sube": -1, "aciklama": -1}
+    return 1, {"imei": 0, "tarih": -1, "bedel": -1, "ad": -1, "sube": -1, "aciklama": -1, "marka": -1}
 def parse_gp_workbook(wb, log) -> List[Dict[str,Any]]:
     out = []
     for ws in wb.worksheets:
@@ -492,7 +515,15 @@ def parse_gp_workbook(wb, log) -> List[Dict[str,Any]]:
                 if re.fullmatch(r"\d{15}", v) and _luhn_ok_imei(v): imeis = [v]
             if not imeis: continue
             for im in imeis:
-                item = { "imei": im, "tarih": norm(vals[cols["tarih"]]) if cols["tarih"] >= 0 else "", "bedel": norm(vals[cols["bedel"]]) if cols["bedel"] >= 0 else "", "ad": norm(vals[cols["ad"]]) if cols["ad"] >= 0 else "", "sube": norm(vals[cols["sube"]]) if cols["sube"] >= 0 else "", "aciklama": norm(vals[cols["aciklama"]]) if cols["aciklama"] >= 0 else "", }
+                item = {
+                    "imei": im,
+                    "tarih": norm(vals[cols["tarih"]]) if cols["tarih"] >= 0 else "",
+                    "bedel": norm(vals[cols["bedel"]]) if cols["bedel"] >= 0 else "",
+                    "ad": norm(vals[cols["ad"]]) if cols["ad"] >= 0 else "",
+                    "sube": norm(vals[cols["sube"]]) if cols["sube"] >= 0 else "",
+                    "aciklama": norm(vals[cols["aciklama"]]) if cols["aciklama"] >= 0 else "",
+                    "marka": norm(vals[cols["marka"]]) if cols["marka"] >= 0 else "",
+                }
                 out.append(item); found_rows += 1
         log(f"[GP] Sayfa '{ws.title}': {found_rows} satır/IMEI çıkarıldı.")
     return out
@@ -582,7 +613,7 @@ class App(tk.Tk):
         ttk.Button(btns, text="Manuel URL'den Yükle/Güncelle (GP)", command=self._load_gp_from_urls).pack(side="left", padx=6, pady=4)
         ttk.Button(btns, text="Manuel Dosyadan Yükle/Güncelle (GP)", command=self._load_gp_from_file).pack(side="left", padx=6, pady=4)
         act = ttk.Frame(self); act.pack(fill="x", padx=12, pady=4)
-        ttk.Button(act, text="1. IMEI Listesi Yükle", command=self._load_imei_list).pack(side="left", padx=4)
+        ttk.Button(act, text="1. Excel Yükle", command=self._load_excel).pack(side="left", padx=4)
         ttk.Button(act, text="2. Raporu Tamamla (NES + GP)", command=self._start_scan).pack(side="left", padx=4)
         ttk.Button(act, text="Seçili → İndir", command=self._download_selected).pack(side="left", padx=4)
         ttk.Button(act, text="Excel'e Aktar", command=self._export_excel).pack(side="left", padx=4)
@@ -596,8 +627,8 @@ class App(tk.Tk):
             self.tree.column(c, width=w, anchor="w")
         self.tree.pack(fill="both", expand=True, padx=12, pady=6)
         ysb = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview); self.tree.configure(yscrollcommand=ysb.set); ysb.place(in_=self.tree, relx=1.0, rely=0, relheight=1.0, x=-16)
-        logf = ttk.LabelFrame(self, text="Log"); logf.pack(fill="x", padx=12, pady=6)
-        self.log = scrolledtext.ScrolledText(logf, height=11); self.log.pack(fill="x", padx=8, pady=6)
+        logf = ttk.LabelFrame(self, text="Log"); logf.pack(fill="both", expand=True, padx=12, pady=6)
+        self.log = scrolledtext.ScrolledText(logf, height=18); self.log.pack(fill="both", expand=True, padx=8, pady=6)
 
     def _log(self, msg: str): self.log.insert(tk.END, msg + "\n"); self.log.see(tk.END)
     def _save_settings(self):
@@ -630,44 +661,46 @@ class App(tk.Tk):
         if not arr: messagebox.showinfo("Bilgi", "Panodaki metinde EAR/EFR bulunamadı.")
         self._set_docnos(arr)
     def _clear_docnos(self): self._set_docnos([])
-    def _load_imei_list(self):
-        p = filedialog.askopenfilename(title="IMEI listesi seç (Excel/CSV/TXT)", filetypes=[("Excel","*.xlsx *.xls"),("CSV","*.csv"),("Metin","*.txt"),("Tümü","*.*")])
+    def _load_excel(self):
+        p = filedialog.askopenfilename(title="Excel dosyası seç (Excel/CSV/TXT)", filetypes=[("Excel","*.xlsx *.xls"),("CSV","*.csv"),("Metin","*.txt"),("Tümü","*.*")])
         if not p: return
         self.tree.delete(*self.tree.get_children())
         self.rows.clear(); self.iid_to_row_index.clear(); self.imei_to_iid.clear(); self.iid_to_ids.clear()
         self.force_imeis_order.clear(); self.force_imeis_set.clear()
 
-        imeis_from_file: List[Dict] = []
+        rows_from_file: List[Dict[str, Any]] = []
         try:
             ext = os.path.splitext(p)[1].lower()
             if ext in (".xlsx",".xls"):
-                wb = load_workbook(p, data_only=True)
+                wb = load_wb(p)
                 template_rows = parse_gp_template_workbook(wb, self._log)
                 if template_rows:
                     for r_list in template_rows:
                         row_dict = {h: (r_list[i] if i < len(r_list) else "") for i, h in enumerate(HEADERS)}
-                        if row_dict.get("imei"): imeis_from_file.append(row_dict)
-                else: # Basit liste, sadece ilk sütunu oku
+                        rows_from_file.append(row_dict)
+                else: # Basit liste, satırları oku
                     ws = wb.active
-                    for r in ws.iter_rows(min_row=1, max_col=1, values_only=True):
-                        v = str(r[0]).strip() if r and r[0] is not None else ""
-                        if re.fullmatch(r"\d{15}", v) and _luhn_ok_imei(v): imeis_from_file.append({"imei": v})
+                    for r in ws.iter_rows(min_row=1, max_col=len(HEADERS), values_only=True):
+                        row_dict = {}
+                        for i, h in enumerate(HEADERS):
+                            row_dict[h] = str(r[i]).strip() if r and i < len(r) and r[i] is not None else ""
+                        rows_from_file.append(row_dict)
             else: # CSV/TXT
                 with open(p, "r", encoding="utf-8-sig") as f:
                     content = f.read()
                     for v in extract_imeis(content):
-                        imeis_from_file.append({"imei": v})
-        except Exception as e: messagebox.showerror("Hata", f"IMEI listesi okunamadı: {e}"); return
+                        rows_from_file.append({"imei": v})
+        except Exception as e: messagebox.showerror("Hata", f"Excel okunamadı: {e}"); return
 
-        for item_dict in imeis_from_file:
-            im = item_dict["imei"]
-            if im in self.force_imeis_set: continue
-            self.force_imeis_order.append(im); self.force_imeis_set.add(im)
-            row = [item_dict.get(h, "") for h in HEADERS]
+        for row_dict in rows_from_file:
+            im = row_dict.get("imei", "")
+            row = [row_dict.get(h, "") for h in HEADERS]
             iid = self.tree.insert("", "end", values=ensure_len(row))
-            self.iid_to_row_index[iid] = len(self.rows); self.rows.append(ensure_len(row)); self.imei_to_iid[im] = iid
+            self.iid_to_row_index[iid] = len(self.rows); self.rows.append(ensure_len(row))
+            if im and im not in self.force_imeis_set:
+                self.force_imeis_order.append(im); self.force_imeis_set.add(im); self.imei_to_iid[im] = iid
 
-        self._log(f"📥 IMEI listesi yüklendi ve tablo oluşturuldu: {len(self.force_imeis_set)} adet")
+        self._log(f"📥 Excel yüklendi: {len(self.rows)} satır, {len(self.force_imeis_set)} IMEI")
     def _merge_gp_ready_rows(self, rows_ready: List[List[Any]]):
         add_new = self.tk_add_new_imeis.get()
         added = merged = skipped = 0
@@ -681,7 +714,13 @@ class App(tk.Tk):
             if iid:
                 cur = ensure_len(list(self.tree.item(iid, "values")))
                 for i, h in enumerate(HEADERS[:20]):
-                    if not cur[i] and rd.get(h): cur[i] = rd[h]
+                    new_val = rd.get(h)
+                    if h == "Marka":
+                        if new_val and (not cur[i] or cur[i] == "Bilinmeyen"):
+                            cur[i] = new_val
+                    else:
+                        if not cur[i] and new_val:
+                            cur[i] = new_val
                 cur[1] = "XML+GP" if (cur[1] and cur[1] != "GP") else (cur[1] or "GP")
                 self.tree.item(iid, values=cur)
                 idxr = self.iid_to_row_index.get(iid)
@@ -706,7 +745,7 @@ class App(tk.Tk):
             try:
                 resp = http_get(url, token=None, typ="bin", log=self._log, stop_evt=self.stop_evt)
                 if resp is None: self._log(f"  ❌ URL yüklenemedi: {url}"); continue
-                wb = load_workbook(io.BytesIO(resp.content), data_only=True)
+                wb = load_wb(io.BytesIO(resp.content))
                 rows_ready = parse_gp_template_workbook(wb, self._log)
                 if rows_ready: self._merge_gp_ready_rows(rows_ready)
                 else: self._merge_gp_items(parse_gp_workbook(wb, self._log))
@@ -717,7 +756,7 @@ class App(tk.Tk):
         if not p: return
         self._log("▶ Manuel GP Yükleme (Dosya)...")
         try:
-            wb = load_workbook(p, data_only=True)
+            wb = load_wb(p)
             rows_ready = parse_gp_template_workbook(wb, self._log)
             if rows_ready: self._merge_gp_ready_rows(rows_ready)
             else: self._merge_gp_items(parse_gp_workbook(wb, self._log))
@@ -731,7 +770,7 @@ class App(tk.Tk):
             txt = nup(it.get("aciklama",""))
             self._mark_flags(im, ref=bool(KEY_REF.search(txt)), is2=bool(KEY_2EL.search(txt)), gp=True)
             iid = self.imei_to_iid.get(im)
-            brand = brand_from_text(it.get("aciklama","")); model = it.get("aciklama",""); borc  = it.get("bedel",""); sube  = it.get("sube",""); info  = "; ".join([v for v in [("Şube: "+sube) if sube else "", it.get("aciklama","")] if v])
+            brand = it.get("marka") or brand_from_text(it.get("aciklama","")); model = it.get("aciklama",""); borc  = it.get("bedel",""); sube  = it.get("sube",""); info  = "; ".join([v for v in [("Şube: "+sube) if sube else "", it.get("aciklama","")] if v])
             if iid:
                 vals = ensure_len(list(self.tree.item(iid, "values")))
                 if not vals[7] and borc: vals[7] = borc
@@ -829,25 +868,31 @@ class App(tk.Tk):
             if sales_first:
                 self._log("🔸 [SATIŞ-ÖNCELİKLİ MOD] EAR/EFR listesi yüklü → önce satışlar taranacak.")
                 out_arch = list_both_archived(EARCH_OUT_LIST, token, start, end, log=self._log, stop_evt=self.stop_evt, section_name="SATIŞ-eArşiv")
-                for meta in out_arch:
+                for idx, meta in enumerate(out_arch, 1):
                     if self.stop_evt.is_set(): break
                     doc_no_meta = str(meta.get("documentNumber") or "")
                     if self.docnos_filter and doc_no_meta.upper() not in self.docnos_filter: continue
                     inv_id = str(meta.get("id") or ""); xmlb = fetch_xml_by(EARCH_OUT_DOC, token, inv_id)
                     if not xmlb: continue
                     P = parse_invoice_xml(xmlb)
-                    if not P.imeis: continue
+                    if not P.imeis:
+                        self._log(f"[SATIŞ-eArşiv] {idx}/{len(out_arch)} {doc_no_meta}: IMEI bulunamadı")
+                        continue
                     for im in P.imeis: self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no_meta or inv_id, im, kind="E-ARŞİV")
+                    self._log(f"[SATIŞ-eArşiv] {idx}/{len(out_arch)} {doc_no_meta}: {len(P.imeis)} IMEI işlendi")
                 out_einv = list_both_archived(EINV_OUT_LIST, token, start, end, log=self._log, stop_evt=self.stop_evt, section_name="SATIŞ-Giden")
-                for meta in out_einv:
+                for idx, meta in enumerate(out_einv, 1):
                     if self.stop_evt.is_set(): break
                     doc_no_meta = str(meta.get("documentNumber") or "")
                     if self.docnos_filter and doc_no_meta.upper() not in self.docnos_filter: continue
                     inv_id = str(meta.get("id") or ""); xmlb = fetch_xml_by(EINV_OUT_DOC, token, inv_id)
                     if not xmlb: continue
                     P = parse_invoice_xml(xmlb)
-                    if not P.imeis: continue
+                    if not P.imeis:
+                        self._log(f"[SATIŞ-Giden] {idx}/{len(out_einv)} {doc_no_meta}: IMEI bulunamadı")
+                        continue
                     for im in P.imeis: self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no_meta or inv_id, im, kind="E-FATURA")
+                    self._log(f"[SATIŞ-Giden] {idx}/{len(out_einv)} {doc_no_meta}: {len(P.imeis)} IMEI işlendi")
             
             self._log("🔹 [ALIŞ] Tarama başlıyor...")
             incoming = list_both_archived(EINV_IN_LIST, token, start, end, log=self._log, stop_evt=self.stop_evt, section_name="ALIŞ")
@@ -866,36 +911,68 @@ class App(tk.Tk):
                 
                 imeis_to_process = [x for x in P.imeis if x in self.force_imeis_set]
 
+                processed = 0
                 for im in imeis_to_process:
                     unit_price = ""; line_total = ""; model = P.model; brand = P.brand
                     for L in P.lines:
-                        if im in L["blob"]: unit_price = L.get("unit_price","") or ""; line_total = L.get("line_total","") or ""; model = L["blob"]; brand = brand_from_text(L["blob"]); break
+                        if im in L["blob"]:
+                            unit_price = L.get("unit_price","") or ""; line_total = L.get("line_total","") or ""; model = L["blob"]; brand = brand_from_text(L["blob"]); break
+                    if "CEP TELEFONU YENİLEME HİZMETİ" in nup(model):
+                        iid = self.imei_to_iid.get(im)
+                        if iid:
+                            vals = ensure_len(list(self.tree.item(iid, "values")))
+                            if not vals[18]: vals[18] = "Fatura (Hizmet)"
+                            if not vals[19]: vals[19] = "ALIŞ KAYDI GEREKLİ"
+                            if vals[23]:
+                                if "Yenileme Faturası" not in vals[23]: vals[23] += " + Yenileme Faturası, GP'den eşleştirilmeli"
+                            else:
+                                vals[23] = "Yenileme Faturası, GP'den eşleştirilmeli"
+                            self.tree.item(iid, values=vals)
+                            idx2 = self.iid_to_row_index.get(iid)
+                            if idx2 is not None: self.rows[idx2] = ensure_len(vals)
+                        self._log(f"[ALIŞ] {idx}/{len(incoming)} {doc_no}: {im} yenileme hizmeti, GP aranacak")
+                        continue
                     borc_tutar = unit_price or line_total or P.payable
-                    self._append_or_merge_purchase(P, inv_id, P.invoice_no or doc_no, im, borc_tutar, model, brand); found_imeis.add(im)
-                
+                    self._append_or_merge_purchase(P, inv_id, P.invoice_no or doc_no, im, borc_tutar, model, brand)
+                    found_imeis.add(im); processed += 1
+
+                if imeis_to_process:
+                    self._log(f"[ALIŞ] {idx}/{len(incoming)} {doc_no}: {processed} IMEI işlendi ({len(found_imeis)}/{len(self.force_imeis_set)})")
+
                 if not P.imeis:
                     tU = P.text_upper
                     if KEY_REF.search(tU): refurb_rows.append(ensure_len(["","XML",P.supplier_id,"FATURA",P.issue_date,P.invoice_no or doc_no,P.supplier_name, P.payable, brand_from_text(tU), P.model or "", "","","","","","","", "YENİLENMİŞ ürün (IMEI yok)","Fatura","Satılabilir", "","","",""]))
                     if "CEP TELEFONU YENİLEME HİZMETİ" in tU: renewal_rows.append(ensure_len(["", "XML", P.supplier_id, "FATURA (Hizmet)", P.issue_date, P.invoice_no or doc_no, P.supplier_name, P.payable, brand_from_text(tU), P.model or "", "", "", "", "", "", "", "", P.description or "CEP TELEFONU YENİLEME HİZMETİ", "Fatura (Hizmet)", "ALIŞ KAYDI GEREKLİ", "", "", "", "Yenileme Faturası, GP'den eşleştirilmeli" ]))
+                    self._log(f"[ALIŞ] {idx}/{len(incoming)} {doc_no}: IMEI yok")
+                elif not imeis_to_process:
+                    self._log(f"[ALIŞ] {idx}/{len(incoming)} {doc_no}: aranan IMEI bulunamadı")
             for r in refurb_rows + renewal_rows:
                 iid = self.tree.insert("", "end", values=r); self.iid_to_row_index[iid] = len(self.rows); self.rows.append(r)
             
             if self.tk_scan_sales.get() and not self.stop_evt.is_set() and not sales_first:
                 self._log("🔸 [SATIŞ] Tarama başlıyor...")
                 out_arch = list_both_archived(EARCH_OUT_LIST, token, start, end, log=self._log, stop_evt=self.stop_evt, section_name="SATIŞ-eArşiv")
-                for meta in out_arch:
+                for idx, meta in enumerate(out_arch, 1):
                     if self.stop_evt.is_set(): break
                     inv_id = str(meta.get("id") or ""); doc_no = str(meta.get("documentNumber") or inv_id); xmlb = fetch_xml_by(EARCH_OUT_DOC, token, inv_id)
                     if not xmlb: continue
                     P = parse_invoice_xml(xmlb)
-                    if P.imeis: [self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no, im, kind="E-ARŞİV") for im in P.imeis]
+                    if not P.imeis:
+                        self._log(f"[SATIŞ-eArşiv] {idx}/{len(out_arch)} {doc_no}: IMEI bulunamadı")
+                        continue
+                    [self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no, im, kind="E-ARŞİV") for im in P.imeis]
+                    self._log(f"[SATIŞ-eArşiv] {idx}/{len(out_arch)} {doc_no}: {len(P.imeis)} IMEI işlendi")
                 out_einv = list_both_archived(EINV_OUT_LIST, token, start, end, log=self._log, stop_evt=self.stop_evt, section_name="SATIŞ-Giden")
-                for meta in out_einv:
+                for idx, meta in enumerate(out_einv, 1):
                     if self.stop_evt.is_set(): break
                     inv_id = str(meta.get("id") or ""); doc_no = str(meta.get("documentNumber") or inv_id); xmlb = fetch_xml_by(EINV_OUT_DOC, token, inv_id)
                     if not xmlb: continue
                     P = parse_invoice_xml(xmlb)
-                    if P.imeis: [self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no, im, kind="E-FATURA") for im in P.imeis]
+                    if not P.imeis:
+                        self._log(f"[SATIŞ-Giden] {idx}/{len(out_einv)} {doc_no}: IMEI bulunamadı")
+                        continue
+                    [self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no, im, kind="E-FATURA") for im in P.imeis]
+                    self._log(f"[SATIŞ-Giden] {idx}/{len(out_einv)} {doc_no}: {len(P.imeis)} IMEI işlendi")
             
             self._log("✅ 1. Adım (NES Arama) Tamamlandı.")
             
@@ -907,7 +984,7 @@ class App(tk.Tk):
                     try:
                         resp = http_get(url, token=None, typ="bin", log=self._log, stop_evt=self.stop_evt)
                         if resp is None: self._log(f"  ❌ GP URL yüklenemedi: {url}"); continue
-                        wb = load_workbook(io.BytesIO(resp.content), data_only=True)
+                        wb = load_wb(io.BytesIO(resp.content))
                         items = parse_gp_workbook(wb, self._log)
                         if items: self._merge_gp_items(items, from_auto_scan=True)
                     except Exception as e: self._log(f"  ❌ GP URL işlenemedi: {e}")
