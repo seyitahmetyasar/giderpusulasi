@@ -470,7 +470,15 @@ def parse_gp_template_workbook(wb, log) -> List[List[Any]]:
             out_rows.append([row_dict[h] for h in HEADERS]); taken += 1
         log(f"[GP] Sayfa '{ws.title}': {taken} satır alındı.")
     return out_rows
-GP_KW = { "imei": ["imei","seri","serial","serı","serino","seri no","seri-no"], "tarih": ["tarih","alış tarihi","alis tarihi","işlem tarihi","islem tarihi","gp tarihi"], "bedel": ["tutar","bedel","fiyat","ödenen","odenen","ucret","ücret"], "ad": ["adı","ad soyad","adsoyad","satıcı","satici","müsteri","musteri","alan","veren"], "sube": ["şube","sube","magaza","mağaza"], "aciklama": ["açıklama","aciklama","not","ürün","urun","cihaz","model"] }
+GP_KW = {
+    "imei": ["imei","seri","serial","serı","serino","seri no","seri-no"],
+    "tarih": ["tarih","alış tarihi","alis tarihi","işlem tarihi","islem tarihi","gp tarihi"],
+    "bedel": ["tutar","bedel","fiyat","ödenen","odenen","ucret","ücret"],
+    "ad": ["adı","ad soyad","adsoyad","satıcı","satici","müsteri","musteri","alan","veren"],
+    "sube": ["şube","sube","magaza","mağaza"],
+    "aciklama": ["açıklama","aciklama","not","ürün","urun","cihaz","model"],
+    "marka": ["marka","brand"],
+}
 def _find_col_idx(headers_row: List[Any], keys: List[str]) -> Optional[int]:
     for i, h in enumerate(headers_row):
         hh = nlow(h)
@@ -482,9 +490,17 @@ def _scan_header(ws) -> Tuple[int, Dict[str,int]]:
         row = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column+1)]
         idx_imei = _find_col_idx(row, GP_KW["imei"])
         if idx_imei is not None:
-            cols = { "imei": idx_imei, "tarih": _find_col_idx(row, GP_KW["tarih"]) or -1, "bedel": _find_col_idx(row, GP_KW["bedel"]) or -1, "ad": _find_col_idx(row, GP_KW["ad"]) or -1, "sube": _find_col_idx(row, GP_KW["sube"]) or -1, "aciklama": _find_col_idx(row, GP_KW["aciklama"]) or -1, }
+            cols = {
+                "imei": idx_imei,
+                "tarih": _find_col_idx(row, GP_KW["tarih"]) or -1,
+                "bedel": _find_col_idx(row, GP_KW["bedel"]) or -1,
+                "ad": _find_col_idx(row, GP_KW["ad"]) or -1,
+                "sube": _find_col_idx(row, GP_KW["sube"]) or -1,
+                "aciklama": _find_col_idx(row, GP_KW["aciklama"]) or -1,
+                "marka": _find_col_idx(row, GP_KW["marka"]) or -1,
+            }
             return r, cols
-    return 1, {"imei": 0, "tarih": -1, "bedel": -1, "ad": -1, "sube": -1, "aciklama": -1}
+    return 1, {"imei": 0, "tarih": -1, "bedel": -1, "ad": -1, "sube": -1, "aciklama": -1, "marka": -1}
 def parse_gp_workbook(wb, log) -> List[Dict[str,Any]]:
     out = []
     for ws in wb.worksheets:
@@ -499,7 +515,15 @@ def parse_gp_workbook(wb, log) -> List[Dict[str,Any]]:
                 if re.fullmatch(r"\d{15}", v) and _luhn_ok_imei(v): imeis = [v]
             if not imeis: continue
             for im in imeis:
-                item = { "imei": im, "tarih": norm(vals[cols["tarih"]]) if cols["tarih"] >= 0 else "", "bedel": norm(vals[cols["bedel"]]) if cols["bedel"] >= 0 else "", "ad": norm(vals[cols["ad"]]) if cols["ad"] >= 0 else "", "sube": norm(vals[cols["sube"]]) if cols["sube"] >= 0 else "", "aciklama": norm(vals[cols["aciklama"]]) if cols["aciklama"] >= 0 else "", }
+                item = {
+                    "imei": im,
+                    "tarih": norm(vals[cols["tarih"]]) if cols["tarih"] >= 0 else "",
+                    "bedel": norm(vals[cols["bedel"]]) if cols["bedel"] >= 0 else "",
+                    "ad": norm(vals[cols["ad"]]) if cols["ad"] >= 0 else "",
+                    "sube": norm(vals[cols["sube"]]) if cols["sube"] >= 0 else "",
+                    "aciklama": norm(vals[cols["aciklama"]]) if cols["aciklama"] >= 0 else "",
+                    "marka": norm(vals[cols["marka"]]) if cols["marka"] >= 0 else "",
+                }
                 out.append(item); found_rows += 1
         log(f"[GP] Sayfa '{ws.title}': {found_rows} satır/IMEI çıkarıldı.")
     return out
@@ -690,7 +714,13 @@ class App(tk.Tk):
             if iid:
                 cur = ensure_len(list(self.tree.item(iid, "values")))
                 for i, h in enumerate(HEADERS[:20]):
-                    if not cur[i] and rd.get(h): cur[i] = rd[h]
+                    new_val = rd.get(h)
+                    if h == "Marka":
+                        if new_val and (not cur[i] or cur[i] == "Bilinmeyen"):
+                            cur[i] = new_val
+                    else:
+                        if not cur[i] and new_val:
+                            cur[i] = new_val
                 cur[1] = "XML+GP" if (cur[1] and cur[1] != "GP") else (cur[1] or "GP")
                 self.tree.item(iid, values=cur)
                 idxr = self.iid_to_row_index.get(iid)
@@ -740,7 +770,7 @@ class App(tk.Tk):
             txt = nup(it.get("aciklama",""))
             self._mark_flags(im, ref=bool(KEY_REF.search(txt)), is2=bool(KEY_2EL.search(txt)), gp=True)
             iid = self.imei_to_iid.get(im)
-            brand = brand_from_text(it.get("aciklama","")); model = it.get("aciklama",""); borc  = it.get("bedel",""); sube  = it.get("sube",""); info  = "; ".join([v for v in [("Şube: "+sube) if sube else "", it.get("aciklama","")] if v])
+            brand = it.get("marka") or brand_from_text(it.get("aciklama","")); model = it.get("aciklama",""); borc  = it.get("bedel",""); sube  = it.get("sube",""); info  = "; ".join([v for v in [("Şube: "+sube) if sube else "", it.get("aciklama","")] if v])
             if iid:
                 vals = ensure_len(list(self.tree.item(iid, "values")))
                 if not vals[7] and borc: vals[7] = borc
