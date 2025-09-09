@@ -582,7 +582,7 @@ class App(tk.Tk):
         ttk.Button(btns, text="Manuel URL'den Yükle/Güncelle (GP)", command=self._load_gp_from_urls).pack(side="left", padx=6, pady=4)
         ttk.Button(btns, text="Manuel Dosyadan Yükle/Güncelle (GP)", command=self._load_gp_from_file).pack(side="left", padx=6, pady=4)
         act = ttk.Frame(self); act.pack(fill="x", padx=12, pady=4)
-        ttk.Button(act, text="1. IMEI Listesi Yükle", command=self._load_imei_list).pack(side="left", padx=4)
+        ttk.Button(act, text="1. Excel Yükle", command=self._load_excel).pack(side="left", padx=4)
         ttk.Button(act, text="2. Raporu Tamamla (NES + GP)", command=self._start_scan).pack(side="left", padx=4)
         ttk.Button(act, text="Seçili → İndir", command=self._download_selected).pack(side="left", padx=4)
         ttk.Button(act, text="Excel'e Aktar", command=self._export_excel).pack(side="left", padx=4)
@@ -630,14 +630,14 @@ class App(tk.Tk):
         if not arr: messagebox.showinfo("Bilgi", "Panodaki metinde EAR/EFR bulunamadı.")
         self._set_docnos(arr)
     def _clear_docnos(self): self._set_docnos([])
-    def _load_imei_list(self):
-        p = filedialog.askopenfilename(title="IMEI listesi seç (Excel/CSV/TXT)", filetypes=[("Excel","*.xlsx *.xls"),("CSV","*.csv"),("Metin","*.txt"),("Tümü","*.*")])
+    def _load_excel(self):
+        p = filedialog.askopenfilename(title="Excel dosyası seç (Excel/CSV/TXT)", filetypes=[("Excel","*.xlsx *.xls"),("CSV","*.csv"),("Metin","*.txt"),("Tümü","*.*")])
         if not p: return
         self.tree.delete(*self.tree.get_children())
         self.rows.clear(); self.iid_to_row_index.clear(); self.imei_to_iid.clear(); self.iid_to_ids.clear()
         self.force_imeis_order.clear(); self.force_imeis_set.clear()
 
-        imeis_from_file: List[Dict] = []
+        rows_from_file: List[Dict[str, Any]] = []
         try:
             ext = os.path.splitext(p)[1].lower()
             if ext in (".xlsx",".xls"):
@@ -646,28 +646,30 @@ class App(tk.Tk):
                 if template_rows:
                     for r_list in template_rows:
                         row_dict = {h: (r_list[i] if i < len(r_list) else "") for i, h in enumerate(HEADERS)}
-                        if row_dict.get("imei"): imeis_from_file.append(row_dict)
-                else: # Basit liste, sadece ilk sütunu oku
+                        rows_from_file.append(row_dict)
+                else: # Basit liste, satırları oku
                     ws = wb.active
-                    for r in ws.iter_rows(min_row=1, max_col=1, values_only=True):
-                        v = str(r[0]).strip() if r and r[0] is not None else ""
-                        if re.fullmatch(r"\d{15}", v) and _luhn_ok_imei(v): imeis_from_file.append({"imei": v})
+                    for r in ws.iter_rows(min_row=1, max_col=len(HEADERS), values_only=True):
+                        row_dict = {}
+                        for i, h in enumerate(HEADERS):
+                            row_dict[h] = str(r[i]).strip() if r and i < len(r) and r[i] is not None else ""
+                        rows_from_file.append(row_dict)
             else: # CSV/TXT
                 with open(p, "r", encoding="utf-8-sig") as f:
                     content = f.read()
                     for v in extract_imeis(content):
-                        imeis_from_file.append({"imei": v})
-        except Exception as e: messagebox.showerror("Hata", f"IMEI listesi okunamadı: {e}"); return
+                        rows_from_file.append({"imei": v})
+        except Exception as e: messagebox.showerror("Hata", f"Excel okunamadı: {e}"); return
 
-        for item_dict in imeis_from_file:
-            im = item_dict["imei"]
-            if im in self.force_imeis_set: continue
-            self.force_imeis_order.append(im); self.force_imeis_set.add(im)
-            row = [item_dict.get(h, "") for h in HEADERS]
+        for row_dict in rows_from_file:
+            im = row_dict.get("imei", "")
+            row = [row_dict.get(h, "") for h in HEADERS]
             iid = self.tree.insert("", "end", values=ensure_len(row))
-            self.iid_to_row_index[iid] = len(self.rows); self.rows.append(ensure_len(row)); self.imei_to_iid[im] = iid
+            self.iid_to_row_index[iid] = len(self.rows); self.rows.append(ensure_len(row))
+            if im and im not in self.force_imeis_set:
+                self.force_imeis_order.append(im); self.force_imeis_set.add(im); self.imei_to_iid[im] = iid
 
-        self._log(f"📥 IMEI listesi yüklendi ve tablo oluşturuldu: {len(self.force_imeis_set)} adet")
+        self._log(f"📥 Excel yüklendi: {len(self.rows)} satır, {len(self.force_imeis_set)} IMEI")
     def _merge_gp_ready_rows(self, rows_ready: List[List[Any]]):
         add_new = self.tk_add_new_imeis.get()
         added = merged = skipped = 0
@@ -829,25 +831,31 @@ class App(tk.Tk):
             if sales_first:
                 self._log("🔸 [SATIŞ-ÖNCELİKLİ MOD] EAR/EFR listesi yüklü → önce satışlar taranacak.")
                 out_arch = list_both_archived(EARCH_OUT_LIST, token, start, end, log=self._log, stop_evt=self.stop_evt, section_name="SATIŞ-eArşiv")
-                for meta in out_arch:
+                for idx, meta in enumerate(out_arch, 1):
                     if self.stop_evt.is_set(): break
                     doc_no_meta = str(meta.get("documentNumber") or "")
                     if self.docnos_filter and doc_no_meta.upper() not in self.docnos_filter: continue
                     inv_id = str(meta.get("id") or ""); xmlb = fetch_xml_by(EARCH_OUT_DOC, token, inv_id)
                     if not xmlb: continue
                     P = parse_invoice_xml(xmlb)
-                    if not P.imeis: continue
+                    if not P.imeis:
+                        self._log(f"[SATIŞ-eArşiv] {idx}/{len(out_arch)} {doc_no_meta}: IMEI bulunamadı")
+                        continue
                     for im in P.imeis: self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no_meta or inv_id, im, kind="E-ARŞİV")
+                    self._log(f"[SATIŞ-eArşiv] {idx}/{len(out_arch)} {doc_no_meta}: {len(P.imeis)} IMEI işlendi")
                 out_einv = list_both_archived(EINV_OUT_LIST, token, start, end, log=self._log, stop_evt=self.stop_evt, section_name="SATIŞ-Giden")
-                for meta in out_einv:
+                for idx, meta in enumerate(out_einv, 1):
                     if self.stop_evt.is_set(): break
                     doc_no_meta = str(meta.get("documentNumber") or "")
                     if self.docnos_filter and doc_no_meta.upper() not in self.docnos_filter: continue
                     inv_id = str(meta.get("id") or ""); xmlb = fetch_xml_by(EINV_OUT_DOC, token, inv_id)
                     if not xmlb: continue
                     P = parse_invoice_xml(xmlb)
-                    if not P.imeis: continue
+                    if not P.imeis:
+                        self._log(f"[SATIŞ-Giden] {idx}/{len(out_einv)} {doc_no_meta}: IMEI bulunamadı")
+                        continue
                     for im in P.imeis: self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no_meta or inv_id, im, kind="E-FATURA")
+                    self._log(f"[SATIŞ-Giden] {idx}/{len(out_einv)} {doc_no_meta}: {len(P.imeis)} IMEI işlendi")
             
             self._log("🔹 [ALIŞ] Tarama başlıyor...")
             incoming = list_both_archived(EINV_IN_LIST, token, start, end, log=self._log, stop_evt=self.stop_evt, section_name="ALIŞ")
@@ -866,36 +874,68 @@ class App(tk.Tk):
                 
                 imeis_to_process = [x for x in P.imeis if x in self.force_imeis_set]
 
+                processed = 0
                 for im in imeis_to_process:
                     unit_price = ""; line_total = ""; model = P.model; brand = P.brand
                     for L in P.lines:
-                        if im in L["blob"]: unit_price = L.get("unit_price","") or ""; line_total = L.get("line_total","") or ""; model = L["blob"]; brand = brand_from_text(L["blob"]); break
+                        if im in L["blob"]:
+                            unit_price = L.get("unit_price","") or ""; line_total = L.get("line_total","") or ""; model = L["blob"]; brand = brand_from_text(L["blob"]); break
+                    if "CEP TELEFONU YENİLEME HİZMETİ" in nup(model):
+                        iid = self.imei_to_iid.get(im)
+                        if iid:
+                            vals = ensure_len(list(self.tree.item(iid, "values")))
+                            if not vals[18]: vals[18] = "Fatura (Hizmet)"
+                            if not vals[19]: vals[19] = "ALIŞ KAYDI GEREKLİ"
+                            if vals[23]:
+                                if "Yenileme Faturası" not in vals[23]: vals[23] += " + Yenileme Faturası, GP'den eşleştirilmeli"
+                            else:
+                                vals[23] = "Yenileme Faturası, GP'den eşleştirilmeli"
+                            self.tree.item(iid, values=vals)
+                            idx2 = self.iid_to_row_index.get(iid)
+                            if idx2 is not None: self.rows[idx2] = ensure_len(vals)
+                        self._log(f"[ALIŞ] {idx}/{len(incoming)} {doc_no}: {im} yenileme hizmeti, GP aranacak")
+                        continue
                     borc_tutar = unit_price or line_total or P.payable
-                    self._append_or_merge_purchase(P, inv_id, P.invoice_no or doc_no, im, borc_tutar, model, brand); found_imeis.add(im)
-                
+                    self._append_or_merge_purchase(P, inv_id, P.invoice_no or doc_no, im, borc_tutar, model, brand)
+                    found_imeis.add(im); processed += 1
+
+                if imeis_to_process:
+                    self._log(f"[ALIŞ] {idx}/{len(incoming)} {doc_no}: {processed} IMEI işlendi ({len(found_imeis)}/{len(self.force_imeis_set)})")
+
                 if not P.imeis:
                     tU = P.text_upper
                     if KEY_REF.search(tU): refurb_rows.append(ensure_len(["","XML",P.supplier_id,"FATURA",P.issue_date,P.invoice_no or doc_no,P.supplier_name, P.payable, brand_from_text(tU), P.model or "", "","","","","","","", "YENİLENMİŞ ürün (IMEI yok)","Fatura","Satılabilir", "","","",""]))
                     if "CEP TELEFONU YENİLEME HİZMETİ" in tU: renewal_rows.append(ensure_len(["", "XML", P.supplier_id, "FATURA (Hizmet)", P.issue_date, P.invoice_no or doc_no, P.supplier_name, P.payable, brand_from_text(tU), P.model or "", "", "", "", "", "", "", "", P.description or "CEP TELEFONU YENİLEME HİZMETİ", "Fatura (Hizmet)", "ALIŞ KAYDI GEREKLİ", "", "", "", "Yenileme Faturası, GP'den eşleştirilmeli" ]))
+                    self._log(f"[ALIŞ] {idx}/{len(incoming)} {doc_no}: IMEI yok")
+                elif not imeis_to_process:
+                    self._log(f"[ALIŞ] {idx}/{len(incoming)} {doc_no}: aranan IMEI bulunamadı")
             for r in refurb_rows + renewal_rows:
                 iid = self.tree.insert("", "end", values=r); self.iid_to_row_index[iid] = len(self.rows); self.rows.append(r)
             
             if self.tk_scan_sales.get() and not self.stop_evt.is_set() and not sales_first:
                 self._log("🔸 [SATIŞ] Tarama başlıyor...")
                 out_arch = list_both_archived(EARCH_OUT_LIST, token, start, end, log=self._log, stop_evt=self.stop_evt, section_name="SATIŞ-eArşiv")
-                for meta in out_arch:
+                for idx, meta in enumerate(out_arch, 1):
                     if self.stop_evt.is_set(): break
                     inv_id = str(meta.get("id") or ""); doc_no = str(meta.get("documentNumber") or inv_id); xmlb = fetch_xml_by(EARCH_OUT_DOC, token, inv_id)
                     if not xmlb: continue
                     P = parse_invoice_xml(xmlb)
-                    if P.imeis: [self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no, im, kind="E-ARŞİV") for im in P.imeis]
+                    if not P.imeis:
+                        self._log(f"[SATIŞ-eArşiv] {idx}/{len(out_arch)} {doc_no}: IMEI bulunamadı")
+                        continue
+                    [self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no, im, kind="E-ARŞİV") for im in P.imeis]
+                    self._log(f"[SATIŞ-eArşiv] {idx}/{len(out_arch)} {doc_no}: {len(P.imeis)} IMEI işlendi")
                 out_einv = list_both_archived(EINV_OUT_LIST, token, start, end, log=self._log, stop_evt=self.stop_evt, section_name="SATIŞ-Giden")
-                for meta in out_einv:
+                for idx, meta in enumerate(out_einv, 1):
                     if self.stop_evt.is_set(): break
                     inv_id = str(meta.get("id") or ""); doc_no = str(meta.get("documentNumber") or inv_id); xmlb = fetch_xml_by(EINV_OUT_DOC, token, inv_id)
                     if not xmlb: continue
                     P = parse_invoice_xml(xmlb)
-                    if P.imeis: [self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no, im, kind="E-FATURA") for im in P.imeis]
+                    if not P.imeis:
+                        self._log(f"[SATIŞ-Giden] {idx}/{len(out_einv)} {doc_no}: IMEI bulunamadı")
+                        continue
+                    [self._append_or_merge_sale(P, inv_id, P.invoice_no or doc_no, im, kind="E-FATURA") for im in P.imeis]
+                    self._log(f"[SATIŞ-Giden] {idx}/{len(out_einv)} {doc_no}: {len(P.imeis)} IMEI işlendi")
             
             self._log("✅ 1. Adım (NES Arama) Tamamlandı.")
             
