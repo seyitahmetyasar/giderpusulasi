@@ -21,6 +21,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
+import warnings
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -396,6 +397,12 @@ def write_excel(rows: List[List[Any]], out_path: str):
         ws.column_dimensions[get_column_letter(col)].width = min(max(12, mx+2), 60)
     wb.save(out_path)
 
+def load_wb(src, **kw):
+    kw.setdefault("data_only", True)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+        return load_workbook(src, **kw)
+
 def is_whitelisted_supplier(name: str, settings: Dict[str,Any]) -> bool:
     if not name: return False
     U = nup(name)
@@ -641,7 +648,7 @@ class App(tk.Tk):
         try:
             ext = os.path.splitext(p)[1].lower()
             if ext in (".xlsx",".xls"):
-                wb = load_workbook(p, data_only=True)
+                wb = load_wb(p)
                 template_rows = parse_gp_template_workbook(wb, self._log)
                 if template_rows:
                     for r_list in template_rows:
@@ -708,7 +715,7 @@ class App(tk.Tk):
             try:
                 resp = http_get(url, token=None, typ="bin", log=self._log, stop_evt=self.stop_evt)
                 if resp is None: self._log(f"  ❌ URL yüklenemedi: {url}"); continue
-                wb = load_workbook(io.BytesIO(resp.content), data_only=True)
+                wb = load_wb(io.BytesIO(resp.content))
                 rows_ready = parse_gp_template_workbook(wb, self._log)
                 if rows_ready: self._merge_gp_ready_rows(rows_ready)
                 else: self._merge_gp_items(parse_gp_workbook(wb, self._log))
@@ -719,7 +726,7 @@ class App(tk.Tk):
         if not p: return
         self._log("▶ Manuel GP Yükleme (Dosya)...")
         try:
-            wb = load_workbook(p, data_only=True)
+            wb = load_wb(p)
             rows_ready = parse_gp_template_workbook(wb, self._log)
             if rows_ready: self._merge_gp_ready_rows(rows_ready)
             else: self._merge_gp_items(parse_gp_workbook(wb, self._log))
@@ -947,7 +954,7 @@ class App(tk.Tk):
                     try:
                         resp = http_get(url, token=None, typ="bin", log=self._log, stop_evt=self.stop_evt)
                         if resp is None: self._log(f"  ❌ GP URL yüklenemedi: {url}"); continue
-                        wb = load_workbook(io.BytesIO(resp.content), data_only=True)
+                        wb = load_wb(io.BytesIO(resp.content))
                         items = parse_gp_workbook(wb, self._log)
                         if items: self._merge_gp_items(items, from_auto_scan=True)
                     except Exception as e: self._log(f"  ❌ GP URL işlenemedi: {e}")
